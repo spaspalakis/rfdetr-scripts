@@ -14,11 +14,7 @@ from rfdetr import RFDETRSegLarge, RFDETRSegMedium, RFDETRSegNano, RFDETRSegSmal
 from rfdetr.training import RFDETRDataModule, RFDETRModelModule, build_trainer
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-
-DEFAULT_DATASET = Path(
-    "/home/spaspalakis/Documents/iDriving/uc2.2/"
-    "UC2.2-Instance segmentation.v2-576x576-rf-detr--medium-.coco"
-)
+DATA_YAML = SCRIPT_DIR / "data.yaml"
 DEFAULT_OUTPUT = SCRIPT_DIR / "output"
 
 MODEL_MAP = {
@@ -33,13 +29,6 @@ DEFAULT_RESOLUTION = {
     "small": 384,
     "medium": 432,
     "large": 504,
-}
-
-# TrainConfig has no `device` field. Lightning accelerator names differ from torch devices.
-_ACCELERATOR = {
-    "cuda": "gpu",
-    "cpu": "cpu",
-    "mps": "mps",
 }
 
 
@@ -156,26 +145,18 @@ class TrainingSummaryCallback(Callback):
         self._started_at = datetime.now()
         self._capture_validation_tables(trainer)
 
-    def on_validation_start(self, trainer, pl_module):
-        self._capture_validation_tables(trainer)
-
     def _capture_validation_tables(self, trainer) -> None:
         for callback in trainer.callbacks:
             printer = getattr(callback, "_print_metrics_tables", None)
-            if not callable(printer) or getattr(printer, "_summary_wrapped", False):
+            if not callable(printer):
                 continue
             summary = self
 
-            def wrapped(*args, _printer=printer, **kwargs):
-                _printer(*args, **kwargs)
-                trainer_arg = kwargs.get("trainer", args[0] if args else None)
-                split = kwargs.get("split", args[1] if len(args) > 1 else None)
-                overall = kwargs.get("overall", args[2] if len(args) > 2 else None)
-                per_class = kwargs.get("per_class", args[3] if len(args) > 3 else None)
-                if split == "val" and isinstance(overall, dict):
-                    summary._record_validation(trainer_arg, overall, per_class or [])
+            def wrapped(trainer, split, overall, per_class, _printer=printer):
+                _printer(trainer, split, overall, per_class)
+                if split == "val":
+                    summary._record_validation(trainer, overall, per_class)
 
-            wrapped._summary_wrapped = True
             callback._print_metrics_tables = wrapped
             return
 
@@ -256,6 +237,9 @@ class TrainingSummaryCallback(Callback):
             f"({self.summary['batch_size']} x {self.summary['grad_accum']} x {num_devices})",
             f"  Learning rate       : {self.summary['lr']}",
         ]
+        if self.summary.get("classes"):
+            lines.append("  Classes             :")
+            lines.extend(f"    {row}" for row in self.summary["classes"])
         if self.summary.get("resume"):
             lines.append(f"  Resumed from        : {self.summary['resume']}")
         if best_score is not None:
@@ -351,15 +335,87 @@ class TrainingSummaryCallback(Callback):
         return lines
 
 
+def _names_from_config(names: object, source: Path) -> list[str]:
+    """Read a YOLO-style ``names`` list or ``{0: name}`` map."""
+    if isinstance(names, list):
+        ordered = [str(name).strip() for name in names]
+    elif isinstance(names, dict):
+        numeric_keys: list[int] = []
+        for key in names:
+            key_text = str(key)
+            if not key_text.isdigit():
+                raise ValueError(
+                    f"{source} names must use integer keys 0..N-1, got {key!r}"
+                )
+            numeric_keys.append(int(key_text))
+        if sorted(set(numeric_keys)) != list(range(len(numeric_keys))):
+            raise ValueError(
+                f"{source} names must be contiguous keys 0..N-1, got {sorted(set(numeric_keys))}"
+            )
+        ordered = []
+        for index in range(len(numeric_keys)):
+            value = names.get(index, names.get(str(index)))
+            ordered.append(str(value).strip())
+    else:
+        raise ValueError(f"{source} field 'names' must be a list or a map of 0..N-1")
+    if not ordered or any(not name for name in ordered):
+        raise ValueError(f"{source} contains an empty class name")
+    return ordered
+
+
+def load_dataset_config(path: Path) -> dict[str, object]:
+    """Load a YOLO-style dataset config with ``path`` and ``names``."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError("PyYAML is required to read dataset config files") from exc
+
+    if not path.is_file():
+        raise ValueError(f"dataset config not found: {path}")
+    with path.open(encoding="utf-8") as handle:
+        try:
+            payload = yaml.safe_load(handle)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"could not read {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a mapping with 'path' and 'names'")
+
+    dataset_path = payload.get("path", payload.get("dataset_dir"))
+    names = payload.get("names")
+    if names is None:
+        raise ValueError(f"{path} must define 'names', the class list in model order")
+    return {
+        "path": Path(str(dataset_path)).expanduser() if dataset_path else None,
+        "names": _names_from_config(names, path),
+        "source": path,
+    }
+
+
+def resolve_training_dataset() -> tuple[Path, Path, list[str]]:
+    """Load ``data.yaml`` next to this script and return its dataset path and classes."""
+    if not DATA_YAML.is_file():
+        raise ValueError(
+            f"{DATA_YAML} was not found. Create it with 'path' and 'names'."
+        )
+
+    dataset_config = load_dataset_config(DATA_YAML)
+    dataset_path = dataset_config.get("path")
+    if dataset_path is None:
+        raise ValueError(f"{DATA_YAML} must define 'path'")
+
+    resolved_dir = resolve_path(Path(str(dataset_path)))
+    if not resolved_dir.is_dir():
+        raise ValueError(f"dataset directory not found: {resolved_dir}")
+
+    names = dataset_config["names"]
+    if not isinstance(names, list):
+        raise ValueError(f"{DATA_YAML} has no class names")
+    return resolved_dir, DATA_YAML, names
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train an RF-DETR segmentation model on a COCO/YOLO dataset.",
-    )
-    parser.add_argument(
-        "--dataset-dir",
-        type=Path,
-        default=DEFAULT_DATASET,
-        help=f"Path to dataset root (default: {DEFAULT_DATASET}).",
     )
     parser.add_argument(
         "--output",
@@ -378,16 +434,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Input resolution (must be divisible by model block size). "
-        "Defaults: nano=312, small=384, medium=432, large=504. "
-        "This is the training size only when multi-scale is off.",
-    )
-    parser.add_argument(
-        "--multi-scale",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Resize each batch above --resolution. RF-DETR then keeps only the "
-        "largest expanded scale, so 648 trains at 768 and can exhaust a 16 GB GPU. "
-        "Default: off, training stays at --resolution.",
+        "Defaults: nano=312, small=384, medium=432, large=504.",
     )
     parser.add_argument(
         "--epochs",
@@ -443,8 +490,7 @@ def parse_args() -> argparse.Namespace:
         "--gradient-checkpointing",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Trade compute for lower VRAM usage (default: enabled). "
-        "Applied on the model, not as a training-config field.",
+        help="Trade compute for lower VRAM usage (default: enabled).",
     )
     parser.add_argument(
         "--tensorboard",
@@ -456,20 +502,13 @@ def parse_args() -> argparse.Namespace:
         "--device",
         choices=("cuda", "cpu", "mps"),
         default="cuda",
-        help="Training device (default: cuda). Mapped to a Lightning accelerator.",
+        help="Training device (default: cuda).",
     )
     parser.add_argument(
         "--run-id",
         type=str,
         default=None,
         help="Optional custom run folder name. Auto-generated if omitted.",
-    )
-    parser.add_argument(
-        "--eval-only",
-        type=Path,
-        default=None,
-        help="Skip training and print validation tables, including per-class AP, "
-        "for this checkpoint.",
     )
     return parser.parse_args()
 
@@ -511,26 +550,21 @@ def main() -> int:
         print("Error: --skip-epochs must be >= 0.", file=sys.stderr)
         return 1
 
-    dataset_dir = resolve_path(args.dataset_dir)
-    if not dataset_dir.is_dir():
-        print(f"Error: dataset directory not found: {dataset_dir}", file=sys.stderr)
+    try:
+        dataset_dir, config_path, class_names = resolve_training_dataset()
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
+    class_lines = [f"{index}  {name}" for index, name in enumerate(class_names)]
+    class_origin = f"{len(class_names)} from {config_path}"
 
     resolution = args.resolution or DEFAULT_RESOLUTION[args.model_size]
-    eval_only = resolve_path(args.eval_only) if args.eval_only else None
-    if eval_only is not None and not eval_only.is_file():
-        print(f"Error: checkpoint not found: {eval_only}", file=sys.stderr)
-        return 1
+    output_base = resolve_path(args.output)
+    output_base.mkdir(parents=True, exist_ok=True)
 
-    if eval_only is not None:
-        run_id = eval_only.parent.name
-        output_dir = eval_only.parent
-    else:
-        output_base = resolve_path(args.output)
-        output_base.mkdir(parents=True, exist_ok=True)
-        run_id = build_run_id(args, resolution)
-        output_dir = output_base / run_id
-        output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = build_run_id(args, resolution)
+    output_dir = output_base / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     resume = str(resolve_path(args.resume)) if args.resume else None
     if args.resume and not Path(resume).is_file():
@@ -538,27 +572,30 @@ def main() -> int:
         return 1
 
     effective_batch = args.batch_size * args.grad_accum
-    accelerator = _ACCELERATOR[args.device]
-    print(f"Dataset dir      : {dataset_dir}")
+    (output_dir / "class_names.txt").write_text(
+        "\n".join(class_names) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"Dataset dir      : {dataset_dir}", flush=True)
+    if config_path is not None:
+        print(f"Dataset config   : {config_path}", flush=True)
+    print(f"Classes          : {class_origin}", flush=True)
+    for line in class_lines:
+        print(f"  {line}", flush=True)
     print(f"Model            : RFDETRSeg{args.model_size.capitalize()}")
     print(f"Resolution       : {resolution}")
-    print(f"Multi-scale      : {args.multi_scale}")
     print(f"Epochs           : {args.epochs}")
     print(f"Batch / accum    : {args.batch_size} x {args.grad_accum} = {effective_batch} effective")
     print(f"Learning rate    : {args.lr}")
     print(f"Skip epochs      : {args.skip_epochs}")
-    print(f"Accelerator      : {accelerator}")
-    print(f"Grad checkpoint  : {args.gradient_checkpointing}")
     print(f"Output dir       : {output_dir}")
     if resume:
         print(f"Resume from      : {resume}")
 
     model_cls = MODEL_MAP[args.model_size]
-    # resolution and gradient_checkpointing are ModelConfig fields.
-    model = model_cls(
-        resolution=resolution,
-        gradient_checkpointing=args.gradient_checkpointing,
-    )
+    # resolution is a ModelConfig field — must be set at init, not on TrainConfig.
+    model = model_cls(resolution=resolution)
 
     config = model.get_train_config(
         dataset_dir=str(dataset_dir),
@@ -567,17 +604,14 @@ def main() -> int:
         batch_size=args.batch_size,
         grad_accum_steps=args.grad_accum,
         lr=args.lr,
-        accelerator=accelerator,
+        device=args.device,
         early_stopping=args.early_stopping,
         early_stopping_patience=args.early_stopping_patience,
         skip_best_epochs=args.skip_epochs,
-        multi_scale=args.multi_scale,
+        gradient_checkpointing=args.gradient_checkpointing,
         tensorboard=args.tensorboard,
-        resume=None if eval_only is not None else resume,
-        # Per-class AP is off unless this is set. eval_base_model makes the
-        # printed "Val — Per-class Metrics" table use the checkpoint weights.
-        log_per_class_metrics=True,
-        eval_base_model=True,
+        resume=resume,
+        class_names=class_names,
     )
 
     module = RFDETRModelModule(model.model_config, config)
@@ -589,6 +623,7 @@ def main() -> int:
             {
                 "run_id": run_id,
                 "dataset": str(dataset_dir),
+                "classes": class_lines,
                 "model_size": args.model_size,
                 "resolution": resolution,
                 "batch_size": args.batch_size,
@@ -604,11 +639,6 @@ def main() -> int:
     )
 
     summary_callback = trainer.callbacks[-1]
-    if eval_only is not None:
-        print(f"Eval only        : {eval_only}")
-        _validate_best_checkpoint(trainer, module, datamodule, eval_only, summary_callback)
-        return 0
-
     trainer.fit(module, datamodule, ckpt_path=resume)
 
     model.model.model = module.model
