@@ -1,0 +1,5 @@
+path: /home/spaspalakis/Documents/REACTION/dataset-Reaction/Reaction.v9i.yolov8
+names:
+  0: boat
+  1: car
+  2: human
