@@ -634,6 +634,7 @@ def main() -> int:
                 "tensorboard": args.tensorboard,
                 "resume": resume,
                 "class_names": class_names,
+                "log_per_class_metrics": True,
             },
         )
     )
