@@ -34,11 +34,11 @@ Default αναλύσεις: nano 384, small 512, medium 576, large 704. Αν τ�
 
 ### `evaluate.py`
 
-Μετράει ξανά ένα αποθηκευμένο checkpoint. `--checkpoint` είναι υποχρεωτικό. Default dataset: το Reaction YOLO. Default split: `val`.
+Μετράει ξανά ένα αποθηκευμένο μοντέλο. `--model` είναι υποχρεωτικό. Default dataset: το Reaction YOLO. Default split: `val`.
 
 ```bash
 python evaluate.py \
-  --checkpoint output/<run>/checkpoint_best_total.pth \
+  --model output/<run>/checkpoint_best_total.pth \
   --model-size medium \
   --split test
 ```
@@ -99,7 +99,7 @@ Default αναλύσεις, αν δεν δώσεις `--resolution`: nano 312, s
 
 ```bash
 python evaluate.py \
-  --checkpoint output/<run>/checkpoint_best_total.pth \
+  --model output/<run>/checkpoint_best_total.pth \
   --dataset-dir /path/to/coco-segmentation-dataset \
   --model-size medium \
   --split val

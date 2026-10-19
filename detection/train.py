@@ -543,6 +543,23 @@ def build_run_id(args: argparse.Namespace, resolution: int) -> str:
 _ACCELERATOR = {"cuda": "gpu", "cpu": "cpu", "mps": "mps"}
 
 
+def _align_model_classes(model, dataset_dir: Path, class_names: list[str]) -> tuple[int, int]:
+    """Resize the classification head to this dataset, as ``RFDETR.train()`` does.
+
+    Without this, the module keeps the pretrained COCO head (90 classes) and
+    the dataset labels never match it.
+    """
+    before = int(model.model_config.num_classes)
+    align = getattr(model, "_align_num_classes_from_dataset", None)
+    if callable(align):
+        align(str(dataset_dir))
+    after = int(model.model_config.num_classes)
+    if class_names and after != len(class_names):
+        model.model_config.num_classes = len(class_names)
+        after = len(class_names)
+    return before, after
+
+
 def _train_config_kwargs(model, values: dict) -> dict:
     """Keep only arguments this installed RF-DETR TrainConfig accepts.
 
@@ -613,6 +630,10 @@ def main() -> int:
     model_cls = MODEL_MAP[args.model_size]
     # resolution is a ModelConfig field — must be set at init, not on TrainConfig.
     model = model_cls(resolution=resolution)
+    head_before, head_after = _align_model_classes(model, dataset_dir, class_names)
+    print(f"Model head       : {head_after} classes", flush=True)
+    if head_before != head_after:
+        print(f"                   resized from the pretrained head ({head_before})", flush=True)
     if "gradient_checkpointing" in getattr(model.model_config, "model_fields", {}):
         model.model_config.gradient_checkpointing = args.gradient_checkpointing
 

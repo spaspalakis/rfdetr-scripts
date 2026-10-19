@@ -28,7 +28,7 @@ Use `checkpoint_best_total.pth` in that folder. The same folder has `class_names
 
 ```bash
 python evaluate.py \
-  --checkpoint output/<run>/checkpoint_best_total.pth \
+  --model output/<run>/checkpoint_best_total.pth \
   --model-size medium \
   --split val
 ```

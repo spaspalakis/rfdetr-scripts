@@ -42,10 +42,10 @@ def parse_args() -> argparse.Namespace:
         description="Measure overall and per-class mAP for a saved RF-DETR checkpoint.",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--model",
         type=Path,
         required=True,
-        help="Checkpoint to evaluate (checkpoint_best_total.pth from a training run).",
+        help="Trained model file (checkpoint_best_total.pth from a training run).",
     )
     parser.add_argument(
         "--dataset-dir",
@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Report file. Defaults to eval_report.txt next to the checkpoint.",
+        help="Report file. Defaults to eval_report.txt next to the model file.",
     )
     return parser.parse_args()
 
@@ -195,9 +195,9 @@ def _report_lines(
         " CHECKPOINT EVALUATION",
         "=" * 60,
         f"  When               : {datetime.now():%Y-%m-%d %H:%M:%S}",
-        f"  Checkpoint         : {checkpoint}",
+        f"  Model file         : {checkpoint}",
         f"  Dataset            : {dataset_dir}",
-        f"  Model              : RFDETR{model_size.capitalize()}",
+        f"  Model size         : RFDETR{model_size.capitalize()}",
         f"  Resolution         : {resolution}",
         f"  Split              : {split}",
         "",
@@ -234,12 +234,12 @@ def _report_lines(
 
 def main() -> int:
     args = parse_args()
-    checkpoint = args.checkpoint.expanduser().resolve()
+    checkpoint = args.model.expanduser().resolve()
     dataset_dir = args.dataset_dir.expanduser().resolve()
     resolution = args.resolution or DEFAULT_RESOLUTION[args.model_size]
 
     if not checkpoint.is_file():
-        print(f"Error: checkpoint not found: {checkpoint}", file=sys.stderr)
+        print(f"Error: model file not found: {checkpoint}", file=sys.stderr)
         return 1
     if not dataset_dir.is_dir():
         print(f"Error: dataset directory not found: {dataset_dir}", file=sys.stderr)
@@ -254,9 +254,9 @@ def main() -> int:
         else checkpoint.parent / "eval_report.txt"
     )
 
-    print(f"Checkpoint   : {checkpoint}")
+    print(f"Model file   : {checkpoint}")
     print(f"Dataset      : {dataset_dir}")
-    print(f"Model        : RFDETR{args.model_size.capitalize()}")
+    print(f"Model size   : RFDETR{args.model_size.capitalize()}")
     print(f"Resolution   : {resolution}")
     print(f"Split        : {args.split}")
     print(f"Batch size   : {args.batch_size}")
