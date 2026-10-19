@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--folder", type=Path, help="Folder of images.")
     parser.add_argument("--video", action="store_true", help="Process a video file.")
     parser.add_argument("--video-path", type=Path, help="Video file, used with --video.")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="checkpoint_best_total.pth")
+    parser.add_argument("--model", type=Path, required=True, help="checkpoint_best_total.pth")
     parser.add_argument(
         "--classes",
         type=Path,
@@ -102,10 +102,10 @@ def annotate(frame: np.ndarray, detections: sv.Detections, labels: list[str]) ->
 
 
 def load_model(args: argparse.Namespace) -> Any:
-    checkpoint = args.checkpoint.expanduser().resolve()
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
-    model = MODEL_MAP[args.model_size](pretrain_weights=str(checkpoint))
+    weights = args.model.expanduser().resolve()
+    if not weights.is_file():
+        raise FileNotFoundError(f"Model not found: {weights}")
+    model = MODEL_MAP[args.model_size](pretrain_weights=str(weights))
     if args.optimize:
         model.optimize_for_inference(compile=True, batch_size=1)
     return model
@@ -173,11 +173,11 @@ def main() -> int:
     if error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    checkpoint = args.checkpoint.expanduser().resolve()
+    weights = args.model.expanduser().resolve()
     classes_path = (
         args.classes.expanduser().resolve()
         if args.classes
-        else checkpoint.parent / "class_names.txt"
+        else weights.parent / "class_names.txt"
     )
     if not classes_path.is_file():
         print(f"Error: class list not found: {classes_path}", file=sys.stderr)
@@ -185,7 +185,7 @@ def main() -> int:
     try:
         class_names = load_class_names(classes_path)
         model = load_model(args)
-        print(f"Checkpoint : {checkpoint}")
+        print(f"Model      : {weights}")
         print(f"Classes    : {', '.join(class_names[i] for i in range(len(class_names)))}")
         if args.video:
             run_on_video(args, model, class_names)

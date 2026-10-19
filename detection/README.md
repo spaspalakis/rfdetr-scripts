@@ -2,9 +2,6 @@
 
 `train.py` trains an RF-DETR detection model (boxes). The dataset path and class names live in `data.yaml` next to the script.
 
-The Reaction export is already YOLO detection (`train/images`, `train/labels`, `data.yaml` inside the dataset). RF-DETR reads that layout directly. No COCO conversion and no copy of the images.
-
-Classes, in model order: `boat`, `car`, `human`.
 
 ## Train
 
@@ -20,9 +17,6 @@ python train.py \
   --skip-epochs 3
 ```
 
-Resolution defaults: nano 384, small 512, medium 576, large 704. Effective batch is `batch-size × grad-accum`.
-
-If the GPU runs out of memory, rerun with `--batch-size 1`.
 
 ## Output
 
@@ -45,7 +39,7 @@ python evaluate.py \
 
 ```bash
 python inference.py \
-  --checkpoint output/<run>/checkpoint_best_total.pth \
+  --model output/<run>/checkpoint_best_total.pth \
   --model-size medium \
   --folder /path/to/images \
   --threshold 0.5
