@@ -540,6 +540,22 @@ def build_run_id(args: argparse.Namespace, resolution: int) -> str:
     )
 
 
+_ACCELERATOR = {"cuda": "gpu", "cpu": "cpu", "mps": "mps"}
+
+
+def _train_config_kwargs(model, values: dict) -> dict:
+    """Keep only arguments this installed RF-DETR TrainConfig accepts.
+
+    Older releases take ``device`` and ``gradient_checkpointing``. Newer
+    releases take ``accelerator`` and reject the old names. Both sets are
+    passed in, and the unknown ones are removed.
+    """
+    fields = getattr(getattr(model, "_train_config_class", None), "model_fields", None)
+    if not fields:
+        return {key: value for key, value in values.items() if key != "accelerator"}
+    return {key: value for key, value in values.items() if key in fields}
+
+
 def main() -> int:
     args = parse_args()
 
@@ -597,22 +613,30 @@ def main() -> int:
     model_cls = MODEL_MAP[args.model_size]
     # resolution is a ModelConfig field — must be set at init, not on TrainConfig.
     model = model_cls(resolution=resolution)
+    if "gradient_checkpointing" in getattr(model.model_config, "model_fields", {}):
+        model.model_config.gradient_checkpointing = args.gradient_checkpointing
 
     config = model.get_train_config(
-        dataset_dir=str(dataset_dir),
-        output_dir=str(output_dir),
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        grad_accum_steps=args.grad_accum,
-        lr=args.lr,
-        device=args.device,
-        early_stopping=args.early_stopping,
-        early_stopping_patience=args.early_stopping_patience,
-        skip_best_epochs=args.skip_epochs,
-        gradient_checkpointing=args.gradient_checkpointing,
-        tensorboard=args.tensorboard,
-        resume=resume,
-        class_names=class_names,
+        **_train_config_kwargs(
+            model,
+            {
+                "dataset_dir": str(dataset_dir),
+                "output_dir": str(output_dir),
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "grad_accum_steps": args.grad_accum,
+                "lr": args.lr,
+                "device": args.device,
+                "accelerator": _ACCELERATOR[args.device],
+                "early_stopping": args.early_stopping,
+                "early_stopping_patience": args.early_stopping_patience,
+                "skip_best_epochs": args.skip_epochs,
+                "gradient_checkpointing": args.gradient_checkpointing,
+                "tensorboard": args.tensorboard,
+                "resume": resume,
+                "class_names": class_names,
+            },
+        )
     )
 
     module = RFDETRModelModule(model.model_config, config)
