@@ -20,10 +20,12 @@ pip install "rfdetr[train]" supervision
 ```bash
 python train.py \
   --model-size medium \
+  --resolution 648 \
   --epochs 100 \
   --batch-size 2 \
-  --grad-accum 4 \
-  --skip-epochs 3
+  --grad-accum 8 \
+  --skip-epochs 3 \
+  --early-stopping-patience 10
 ```
 
 Default αναλύσεις: nano 384, small 512, medium 576, large 704. Αν τελειώσει η μνήμη της GPU, `--batch-size 1`.
