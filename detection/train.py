@@ -535,8 +535,7 @@ def build_run_id(args: argparse.Namespace, resolution: int) -> str:
         return args.run_id
     now = datetime.now()
     return (
-        f"{now:%y-%m-%d}_{now:%H}:{now:%M}_det_{args.model_size}_"
-        f"r{resolution}_b{args.batch_size}_ga{args.grad_accum}_e{args.epochs}"
+        f"{now:%y-%m-%d}_{now:%H}:{now:%M}_det_{args.model_size}_r{resolution}"
     )
 
 

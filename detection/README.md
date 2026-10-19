@@ -20,7 +20,7 @@ python train.py \
 
 ## Output
 
-Each run writes `output/<timestamp>_det_<size>_r<resolution>_.../`.
+Each run writes `output/<timestamp>_det_<size>_r<resolution>/`.
 
 Use `checkpoint_best_total.pth` in that folder. The same folder has `class_names.txt` and `training_summary.txt`.
 

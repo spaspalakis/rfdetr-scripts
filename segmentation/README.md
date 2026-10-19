@@ -60,7 +60,7 @@ Effective batch size is `batch-size × grad-accum`. The example above is `1 × 8
 Each run writes a folder under `output/`. The name looks like:
 
 ```text
-26-09-30_11:35_seg_small_r768_b1_ga8_e200
+26-09-30_11:35_seg_small_r768
 ```
 
 The checkpoint to use for inference is `checkpoint_best_total.pth` inside that folder. The same folder also gets `class_names.txt` and `training_summary.txt`.
