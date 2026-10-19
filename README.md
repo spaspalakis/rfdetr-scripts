@@ -13,10 +13,6 @@ pip install "rfdetr[train]" supervision
 
 ## detection
 
-```bash
-cd /home/spaspalakis/Documents/rf-detr/detection
-```
-
 Το dataset είναι ήδη YOLO (`train/images`, `train/labels`). Δεν χρειάζεται μετατροπή σε COCO. Το path και οι κλάσεις είναι στο `detection/data.yaml`.
 
 ### `train.py`
@@ -77,10 +73,6 @@ python inference.py \
 ---
 
 ## segmentation
-
-```bash
-cd /home/spaspalakis/Documents/rf-detr/segmentation
-```
 
 Το `segmentation/data.yaml` δείχνει σε COCO segmentation export: `train/`, `valid/` και προαιρετικά `test/`, το καθένα με `_annotations.coco.json`.
 
