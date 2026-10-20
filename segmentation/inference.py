@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
         help="Draw segmentation masks (polygons) on the output.",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--model",
         type=Path,
         default=DEFAULT_CHECKPOINT,
         help=f"Path to the trained checkpoint (default: {DEFAULT_CHECKPOINT}).",
@@ -219,12 +219,12 @@ def annotate_frame(
 
 
 def load_model(args: argparse.Namespace) -> Any:
-    checkpoint = args.checkpoint.expanduser().resolve()
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    weights = args.model.expanduser().resolve()
+    if not weights.is_file():
+        raise FileNotFoundError(f"Model not found: {weights}")
 
     model_cls = MODEL_MAP[args.model_size]
-    model = model_cls(pretrain_weights=str(checkpoint))
+    model = model_cls(pretrain_weights=str(weights))
     if args.optimize:
         model.optimize_for_inference(compile=True, batch_size=1)
     return model
@@ -356,7 +356,7 @@ def main() -> int:
         model = load_model(args)
         mask_annotator, box_annotator, label_annotator = make_annotators(args.bbox, args.polygon)
 
-        print(f"Checkpoint   : {args.checkpoint.expanduser().resolve()}")
+        print(f"Model        : {args.model.expanduser().resolve()}")
 
         if args.video:
             run_on_video(

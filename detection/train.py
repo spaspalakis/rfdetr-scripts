@@ -572,9 +572,41 @@ def build_run_id(args: argparse.Namespace, resolution: int) -> str:
         return args.run_id
     now = datetime.now()
     return (
-        f"{now:%y-%m-%d}_{now:%H}:{now:%M}_det_{args.model_size}_"
-        f"r{resolution}_b{args.batch_size}_ga{args.grad_accum}_e{args.epochs}"
+        f"{now:%y-%m-%d}_{now:%H}:{now:%M}_det_{args.model_size}_r{resolution}"
     )
+
+
+_ACCELERATOR = {"cuda": "gpu", "cpu": "cpu", "mps": "mps"}
+
+
+def _align_model_classes(model, dataset_dir: Path, class_names: list[str]) -> tuple[int, int]:
+    """Resize the classification head to this dataset, as ``RFDETR.train()`` does.
+
+    Without this, the module keeps the pretrained COCO head (90 classes) and
+    the dataset labels never match it.
+    """
+    before = int(model.model_config.num_classes)
+    align = getattr(model, "_align_num_classes_from_dataset", None)
+    if callable(align):
+        align(str(dataset_dir))
+    after = int(model.model_config.num_classes)
+    if class_names and after != len(class_names):
+        model.model_config.num_classes = len(class_names)
+        after = len(class_names)
+    return before, after
+
+
+def _train_config_kwargs(model, values: dict) -> dict:
+    """Keep only arguments this installed RF-DETR TrainConfig accepts.
+
+    Older releases take ``device`` and ``gradient_checkpointing``. Newer
+    releases take ``accelerator`` and reject the old names. Both sets are
+    passed in, and the unknown ones are removed.
+    """
+    fields = getattr(getattr(model, "_train_config_class", None), "model_fields", None)
+    if not fields:
+        return {key: value for key, value in values.items() if key != "accelerator"}
+    return {key: value for key, value in values.items() if key in fields}
 
 
 def main() -> int:
@@ -637,22 +669,35 @@ def main() -> int:
     # num_classes must match the yaml list. The Roboflow parent category is not
     # a class, so it must not widen the head or shift the label ids.
     model = model_cls(resolution=resolution, num_classes=len(class_names))
+    head_before, head_after = _align_model_classes(model, dataset_dir, class_names)
+    print(f"Model head       : {head_after} classes", flush=True)
+    if head_before != head_after:
+        print(f"                   resized from the pretrained head ({head_before})", flush=True)
+    if "gradient_checkpointing" in getattr(model.model_config, "model_fields", {}):
+        model.model_config.gradient_checkpointing = args.gradient_checkpointing
 
     config = model.get_train_config(
-        dataset_dir=str(dataset_dir),
-        output_dir=str(output_dir),
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        grad_accum_steps=args.grad_accum,
-        lr=args.lr,
-        device=args.device,
-        early_stopping=args.early_stopping,
-        early_stopping_patience=args.early_stopping_patience,
-        skip_best_epochs=args.skip_epochs,
-        gradient_checkpointing=args.gradient_checkpointing,
-        tensorboard=args.tensorboard,
-        resume=resume,
-        class_names=class_names,
+        **_train_config_kwargs(
+            model,
+            {
+                "dataset_dir": str(dataset_dir),
+                "output_dir": str(output_dir),
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "grad_accum_steps": args.grad_accum,
+                "lr": args.lr,
+                "device": args.device,
+                "accelerator": _ACCELERATOR[args.device],
+                "early_stopping": args.early_stopping,
+                "early_stopping_patience": args.early_stopping_patience,
+                "skip_best_epochs": args.skip_epochs,
+                "gradient_checkpointing": args.gradient_checkpointing,
+                "tensorboard": args.tensorboard,
+                "resume": resume,
+                "class_names": class_names,
+                "log_per_class_metrics": True,
+            },
+        )
     )
 
     module = RFDETRModelModule(model.model_config, config)
