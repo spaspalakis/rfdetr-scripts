@@ -392,6 +392,43 @@ def load_dataset_config(path: Path) -> dict[str, object]:
     }
 
 
+def install_roboflow_leaf_labels(class_names: list[str]) -> None:
+    """Map Roboflow COCO category ids onto the yaml class order.
+
+    A Roboflow COCO export adds a parent category at id 0, named after the
+    project, and numbers the real classes from 1. RF-DETR keeps that numbering,
+    so boat is learned as index 1, person as 2 and vehicle as 3, while
+    class_names.txt is still 0-based. Drop every category that is not one of
+    ``class_names`` and assign 0..N-1 in yaml order.
+    """
+    from rfdetr.datasets.coco import CocoDetection
+
+    if getattr(CocoDetection, "_leaf_label_remap", False):
+        return
+    wanted = {name: index for index, name in enumerate(class_names)}
+    original_init = CocoDetection.__init__
+
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.cat2label is None:
+            return
+        leaf = {
+            cat_id: wanted[cat["name"]]
+            for cat_id, cat in self.coco.cats.items()
+            if cat.get("name") in wanted
+        }
+        if not leaf or leaf == self.cat2label:
+            return
+        self.cat2label = leaf
+        self.label2cat = {label: cat_id for cat_id, label in leaf.items()}
+        setattr(self.coco, "label2cat", self.label2cat)
+        if getattr(self, "prepare", None) is not None:
+            self.prepare.cat2label = leaf
+
+    CocoDetection.__init__ = patched_init
+    CocoDetection._leaf_label_remap = True
+
+
 def resolve_training_dataset() -> tuple[Path, Path, list[str]]:
     """Load ``data.yaml`` next to this script and return its dataset path and classes."""
     if not DATA_YAML.is_file():
@@ -594,9 +631,12 @@ def main() -> int:
     if resume:
         print(f"Resume from      : {resume}")
 
+    install_roboflow_leaf_labels(class_names)
     model_cls = MODEL_MAP[args.model_size]
-    # resolution is a ModelConfig field — must be set at init, not on TrainConfig.
-    model = model_cls(resolution=resolution)
+    # resolution and num_classes are ModelConfig fields — set them at init.
+    # num_classes must match the yaml list. The Roboflow parent category is not
+    # a class, so it must not widen the head or shift the label ids.
+    model = model_cls(resolution=resolution, num_classes=len(class_names))
 
     config = model.get_train_config(
         dataset_dir=str(dataset_dir),
