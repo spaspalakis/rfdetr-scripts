@@ -16,6 +16,8 @@ from typing import Any
 
 from rfdetr import RFDETRLarge, RFDETRMedium, RFDETRNano, RFDETRSmall
 
+from class_ap import format_table, per_class_ap
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 DEFAULT_DATASET = Path(
@@ -290,12 +292,27 @@ def main() -> int:
         overall,
         per_class,
     )
+
+    # RF-DETR reports per-class AP 50:95 only; add AP50 per class.
+    class_ap_report = None
+    names_file = checkpoint.parent / "class_names.txt"
+    class_names = (
+        [line.strip() for line in names_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if names_file.is_file()
+        else [row["name"] for row in per_class]
+    )
+    if class_names:
+        print("\nScoring AP50 per class...", flush=True)
+        class_ap_report = per_class_ap(model, dataset_dir, args.split, class_names)
+        lines[-1:-1] = ["", *(f"  {row}" for row in format_table(class_ap_report))]
     report = "\n".join(lines) + "\n"
     print("\n" + report, flush=True)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
     metrics_path = report_path.with_suffix(".json")
+    if class_ap_report is not None:
+        metrics = {**metrics, "per_class_ap": class_ap_report}
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Report saved : {report_path}")
     print(f"Metrics saved: {metrics_path}")

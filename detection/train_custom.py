@@ -180,6 +180,20 @@ def main() -> int:
         log_per_class_metrics=True,
     )
 
+    # RF-DETR prints per-class AP 50:95 only; score the best checkpoint for AP50 per class too.
+    best = run_dir / "checkpoint_best_total.pth"
+    class_ap_report = None
+    if best.is_file():
+        from class_ap import format_table, per_class_ap
+
+        split = "test" if (root / "test" / COCO_JSON).is_file() else "val"
+        print(f"\nScoring AP50 per class on {split}...", flush=True)
+        best_model = model_cls(pretrain_weights=str(best), resolution=resolution)
+        class_ap_report = per_class_ap(best_model, root, split, classes)
+        table = "\n".join(format_table(class_ap_report))
+        print(table, flush=True)
+        (run_dir / "class_ap.txt").write_text(table + "\n", encoding="utf-8")
+
     (run_dir / "train_info.json").write_text(
         json.dumps(
             {
@@ -189,6 +203,7 @@ def main() -> int:
                 "class_names": classes,
                 "class_id_offset": 0,
                 "dataset": str(root),
+                "class_ap": class_ap_report,
             },
             indent=2,
         ),
