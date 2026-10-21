@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Train an RF-DETR detector on custom classes from a YOLO data.yaml.
+"""Train an RF-DETR detector on custom classes from a Roboflow COCO export.
 
-Tested with rfdetr==1.11.0. The class list comes only from ``names`` in the
-data.yaml. Class ids are 0..N-1 in that order, with no COCO classes and no
-Roboflow project category. The checkpoint can be read by any code that uses
-class_names.txt with a class id offset of 0.
+Tested with rfdetr==1.11.0. The dataset goes to RF-DETR as it is:
+
+    <dataset>/train/_annotations.coco.json  (+ images)
+    <dataset>/valid/_annotations.coco.json  (+ images)
+    <dataset>/test/_annotations.coco.json   (+ images, optional)
+
+RF-DETR 1.11 drops the Roboflow project category (the parent category with
+no boxes), so the model classes are ids 0..N-1 in the COCO category order.
+No COCO-90 classes are used. The checkpoint works with class_names.txt and a
+class id offset of 0.
 
 data.yaml:
 
-    path: /data/my_dataset      # dataset root (relative paths resolve from this yaml)
-    train: train/images         # labels are found by swapping images -> labels
-    val: valid/images           # "valid" is accepted too
-    test: test/images           # optional
-    names:
+    path: /data/reaction-land_model.v1i.coco
+    names:          # optional check: must match the dataset classes, same order
       0: boat
-      1: car
-      2: human
-
-Each label file is YOLO format: ``class_id cx cy w h`` (normalized), one
-object per line, same stem as the image.
+      1: person
+      2: vehicle
 """
 
 from __future__ import annotations
@@ -35,13 +35,12 @@ import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TESTED_RFDETR = "1.11.0"
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-
+COCO_JSON = "_annotations.coco.json"
 DEFAULT_RESOLUTION = {"nano": 384, "small": 512, "medium": 576, "large": 704}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train RF-DETR on custom classes from a YOLO data.yaml.")
+    parser = argparse.ArgumentParser(description="Train RF-DETR on a Roboflow COCO dataset with custom classes.")
     parser.add_argument("--data", type=Path, default=SCRIPT_DIR / "data.yaml", help="Dataset yaml (default: data.yaml next to this script).")
     parser.add_argument("--model-size", choices=sorted(DEFAULT_RESOLUTION), default="medium")
     parser.add_argument("--resolution", type=int, default=None, help="Input size, divisible by 32. Default depends on --model-size.")
@@ -61,160 +60,90 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# --- data.yaml ---------------------------------------------------------------
-
 def read_names(names, source: Path) -> list[str]:
     """Accept ``[a, b]`` or ``{0: a, 1: b}`` and return names in id order."""
     if isinstance(names, list):
-        ordered = [str(name).strip() for name in names]
-    elif isinstance(names, dict):
+        return [str(name).strip() for name in names]
+    if isinstance(names, dict):
         try:
             by_id = {int(key): str(value).strip() for key, value in names.items()}
         except ValueError:
             raise ValueError(f"{source}: 'names' keys must be integers 0..N-1")
         if sorted(by_id) != list(range(len(by_id))):
             raise ValueError(f"{source}: 'names' keys must be 0..N-1 with no gaps, got {sorted(by_id)}")
-        ordered = [by_id[index] for index in range(len(by_id))]
-    else:
-        raise ValueError(f"{source}: 'names' must be a list or a map of 0..N-1")
-    if not ordered or any(not name for name in ordered):
-        raise ValueError(f"{source}: 'names' has an empty class name")
-    if len(set(ordered)) != len(ordered):
-        raise ValueError(f"{source}: 'names' has duplicates: {ordered}")
-    return ordered
+        return [by_id[index] for index in range(len(by_id))]
+    raise ValueError(f"{source}: 'names' must be a list or a map of 0..N-1")
 
 
-def labels_dir_for(images_dir: Path) -> Path:
-    """YOLO convention: .../images/... -> .../labels/..., else <dir>/labels."""
-    parts = list(images_dir.parts)
-    if "images" in parts:
-        index = len(parts) - 1 - parts[::-1].index("images")
-        parts[index] = "labels"
-        return Path(*parts)
-    return images_dir / "labels"
-
-
-def resolve_split(root: Path, value, split: str) -> tuple[Path, Path] | None:
-    if not value:
-        return None
-    images_dir = Path(str(value)).expanduser()
-    if not images_dir.is_absolute():
-        images_dir = root / images_dir
-    images_dir = images_dir.resolve()
-    if images_dir.is_dir() and (images_dir / "images").is_dir():
-        images_dir = images_dir / "images"
-    if not images_dir.is_dir():
-        raise ValueError(f"{split}: images folder not found: {images_dir}")
-    labels_dir = labels_dir_for(images_dir)
-    if not labels_dir.is_dir():
-        raise ValueError(f"{split}: labels folder not found: {labels_dir}")
-    return images_dir, labels_dir
-
-
-def load_data_yaml(path: Path) -> tuple[list[str], dict[str, tuple[Path, Path]]]:
+def load_data_yaml(path: Path) -> tuple[Path, list[str] | None]:
     path = path.expanduser().resolve()
     if not path.is_file():
         raise ValueError(f"data yaml not found: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a mapping with path, train, val and names")
-    if "names" not in data:
-        raise ValueError(f"{path} must define 'names'")
-    names = read_names(data["names"], path)
-
-    root = Path(str(data.get("path") or path.parent)).expanduser()
+    if not isinstance(data, dict) or not data.get("path"):
+        raise ValueError(f"{path} must define 'path', the dataset folder")
+    root = Path(str(data["path"])).expanduser()
     if not root.is_absolute():
         root = path.parent / root
     root = root.resolve()
+    names = read_names(data["names"], path) if data.get("names") else None
+    return root, names
+
+
+def check_dataset(root: Path) -> list[str]:
+    """Check the Roboflow COCO layout and print boxes per class for each split."""
+    from rfdetr.detr import RFDETR
+
     if not root.is_dir():
-        raise ValueError(f"dataset root not found: {root} (from 'path' in {path})")
+        raise ValueError(f"dataset folder not found: {root}")
+    for split in ("train", "valid"):
+        if not (root / split / COCO_JSON).is_file():
+            raise ValueError(f"{root / split / COCO_JSON} not found. Download the dataset in COCO format.")
 
-    splits = {
-        "train": resolve_split(root, data.get("train", "train/images"), "train"),
-        "valid": resolve_split(root, data.get("val", data.get("valid", "valid/images")), "val"),
-        "test": resolve_split(root, data.get("test"), "test"),
-    }
-    if splits["train"] is None or splits["valid"] is None:
-        raise ValueError(f"{path} needs both a train and a val split")
-    return names, {key: value for key, value in splits.items() if value is not None}
+    # The same class list RF-DETR builds for the model (project category removed).
+    classes = list(RFDETR._load_classes(str(root)))
+    print("Dataset classes (model ids):")
+    for index, name in enumerate(classes):
+        print(f"  {index}  {name}")
 
-
-def check_split(split: str, images_dir: Path, labels_dir: Path, num_classes: int) -> Counter:
-    """Count objects per class and stop on a class id outside 0..N-1."""
-    images = [p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES]
-    if not images:
-        raise ValueError(f"{split}: no images in {images_dir}")
-    counts: Counter = Counter()
-    unlabeled = 0
-    for image in images:
-        label = labels_dir / f"{image.stem}.txt"
-        if not label.is_file():
-            unlabeled += 1
+    per_split = {}
+    for split in ("train", "valid", "test"):
+        ann_file = root / split / COCO_JSON
+        if not ann_file.is_file():
             continue
-        for line_no, line in enumerate(label.read_text(encoding="utf-8").splitlines(), 1):
-            fields = line.split()
-            if not fields:
-                continue
-            try:
-                class_id = int(float(fields[0]))
-            except ValueError:
-                raise ValueError(f"{label}:{line_no}: bad class id {fields[0]!r}")
-            if not 0 <= class_id < num_classes:
-                raise ValueError(
-                    f"{label}:{line_no}: class id {class_id} is outside 0..{num_classes - 1}. "
-                    "The labels and 'names' in data.yaml do not match."
-                )
-            counts[class_id] += 1
-    print(f"  {split:<5}: {len(images)} images, {unlabeled} without a label file (background)")
-    return counts
+        data = json.loads(ann_file.read_text(encoding="utf-8"))
+        names = {cat["id"]: cat["name"] for cat in data.get("categories", [])}
+        counts = Counter(names.get(ann["category_id"], "?") for ann in data.get("annotations", []))
+        per_split[split] = counts
+        print(f"  {split:<5}: {len(data.get('images', []))} images, {sum(counts.values())} boxes")
 
+    print("Boxes per class (" + " / ".join(per_split) + "):")
+    for index, name in enumerate(classes):
+        print(f"  {index}  {name:<20} " + " / ".join(f"{per_split[s][name]:>6}" for s in per_split))
+    empty = [name for name in classes if per_split["train"][name] == 0]
+    if empty:
+        raise ValueError(f"no training boxes for {empty}")
+    return classes
 
-def stage_dataset(run_dir: Path, names: list[str], splits: dict[str, tuple[Path, Path]]) -> Path:
-    """Link the splits into the layout RF-DETR reads: <split>/images, <split>/labels, data.yaml."""
-    staged = run_dir / "dataset"
-    for split, (images_dir, labels_dir) in splits.items():
-        target = staged / split
-        target.mkdir(parents=True, exist_ok=True)
-        for name, source in (("images", images_dir), ("labels", labels_dir)):
-            link = target / name
-            if link.is_symlink() or link.exists():
-                link.unlink()
-            link.symlink_to(source, target_is_directory=True)
-    (staged / "data.yaml").write_text(
-        yaml.safe_dump({"nc": len(names), "names": names}, sort_keys=False), encoding="utf-8"
-    )
-    return staged
-
-
-# --- main --------------------------------------------------------------------
 
 def main() -> int:
     args = parse_args()
-    try:
-        names, splits = load_data_yaml(args.data)
-        print(f"Data yaml : {args.data.resolve()}")
-        print("Classes   :")
-        for index, name in enumerate(names):
-            print(f"  {index}  {name}")
-        print("Splits    :")
-        totals = {}
-        for split, (images_dir, labels_dir) in splits.items():
-            totals[split] = check_split(split, images_dir, labels_dir, len(names))
-    except (OSError, ValueError, yaml.YAMLError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    print("Objects per class (train / valid):")
-    for index, name in enumerate(names):
-        print(f"  {index}  {name:<20} {totals['train'][index]:>7} / {totals['valid'][index]:>7}")
-    missing = [names[index] for index in range(len(names)) if totals["train"][index] == 0]
-    if missing:
-        print(f"Error: no training objects for {missing}. Fix the labels or remove those names.", file=sys.stderr)
-        return 1
-
     rfdetr_version = metadata.version("rfdetr")
     if rfdetr_version != TESTED_RFDETR:
         print(f"Warning: rfdetr {rfdetr_version} is installed, this script was tested on {TESTED_RFDETR}.")
+
+    try:
+        root, expected = load_data_yaml(args.data)
+        print(f"Dataset   : {root}")
+        classes = check_dataset(root)
+        if expected is not None and expected != classes:
+            raise ValueError(
+                f"'names' in {args.data} is {expected}, the dataset classes are {classes}. "
+                "Fix data.yaml (or the dataset) so both list the same classes in the same order."
+            )
+    except (OSError, ValueError, KeyError, yaml.YAMLError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     from rfdetr import RFDETRLarge, RFDETRMedium, RFDETRNano, RFDETRSmall
 
@@ -223,19 +152,17 @@ def main() -> int:
     run_id = args.run_id or f"{datetime.now():%y-%m-%d_%H-%M}_det_{args.model_size}_r{resolution}"
     run_dir = (args.output / run_id).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    staged = stage_dataset(run_dir, names, splits)
-    (run_dir / "class_names.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
+    (run_dir / "class_names.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
 
     print(f"Model     : RFDETR{args.model_size.capitalize()} r{resolution} (rfdetr {rfdetr_version})")
     print(f"Batch     : {args.batch_size} x {args.grad_accum} = {args.batch_size * args.grad_accum} effective")
     print(f"Output    : {run_dir}")
 
-    # Starts from RF-DETR's pretrained weights; the class head is rebuilt for len(names) classes.
-    model = model_cls(num_classes=len(names))
+    # Starts from RF-DETR's pretrained weights; the class head is rebuilt for the dataset classes.
+    model = model_cls()
     model.train(
-        dataset_dir=str(staged),
-        dataset_file="yolo",
-        class_names=names,
+        dataset_dir=str(root),
+        dataset_file="roboflow",
         output_dir=str(run_dir),
         resolution=resolution,
         epochs=args.epochs,
@@ -249,26 +176,25 @@ def main() -> int:
         skip_best_epochs=args.skip_epochs,
         resume=str(args.resume) if args.resume else None,
         seed=args.seed,
-        run_test="test" in splits,
+        run_test=(root / "test" / COCO_JSON).is_file(),
         log_per_class_metrics=True,
     )
 
-    best = run_dir / "checkpoint_best_total.pth"
     (run_dir / "train_info.json").write_text(
         json.dumps(
             {
                 "rfdetr_version": rfdetr_version,
                 "model_size": args.model_size,
                 "resolution": resolution,
-                "class_names": names,
+                "class_names": classes,
                 "class_id_offset": 0,
-                "data_yaml": str(args.data.resolve()),
+                "dataset": str(root),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(f"Done. Checkpoint: {best}")
+    print(f"Done. Checkpoint: {run_dir / 'checkpoint_best_total.pth'}")
     print(f"Copy checkpoint_best_total.pth and class_names.txt to models/<land|sea>/det_{args.model_size}_r{resolution}/")
     return 0
 
